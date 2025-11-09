@@ -67,7 +67,6 @@ float sdJar(vec2 p) {
 // --- Main Image ---
 void main() {
     vec2 uv = (2.0 * texCoords - 1.0);
-    uv.y *= -1.0;
     uv.x *= iResolution.x / iResolution.y;
     vec2 original_uv = uv;
     uv -= vec2(0.8, -0.5); // Position jar in bottom right
@@ -78,13 +77,12 @@ void main() {
     // --- Jar ---
     float jarDist = sdJar(uv);
     float jarThickness = 0.01;
-    float inJar = 1.0 - smoothstep(-jarThickness, 0.0, jarDist);
 
     // Glass appearance
-    float glassAlpha = (1.0 - smoothstep(0.0, jarThickness, jarDist)) * 0.1;
-    vec2 normal = normalize(vec2(sdJar(uv + vec2(0.01, 0.0)) - jarDist, sdJar(uv + vec2(0.0, 0.01)) - jarDist));
-    float highlight = pow(max(0.0, dot(reflect(vec3(0.0, 0.0, 1.0), vec3(normal, 0.0)), vec3(0.5, 0.5, 1.0))), 32.0);
-    vec3 jarColor = vec3(0.7, 0.8, 1.0) * 0.5 + highlight * 0.3;
+    float glassAlpha = (1.0 - smoothstep(0.0, jarThickness, jarDist)) * 0.2;
+    vec3 normal = normalize(vec3(dFdx(jarDist), dFdy(jarDist), -0.1));
+    float highlight = pow(max(0.0, dot(reflect(vec3(0.0, 0.0, 1.0), normal), vec3(0.5, 0.5, 1.0))), 32.0);
+    vec3 jarColor = vec3(0.7, 0.8, 1.0) * 0.5 + highlight * 0.5;
 
     // --- Ember ---
     vec2 emberPos = uv - vec2(0.0, -0.2);
@@ -99,25 +97,27 @@ void main() {
     vec2 smoke_uv = uv;
     vec2 warp = vec2(fbm(smoke_uv * 2.0 + time * 0.5), fbm(smoke_uv * 2.0 + time * 0.5 + 5.0)) * 0.3;
     smoke_uv += warp;
-    float smoke = fbm(smoke_uv * 3.0 - vec2(0.0, time * 0.8));
+    float smoke = fbm(smoke_uv * 3.0 + vec2(0.0, time * 0.8));
     smoke = smoothstep(0.4, 0.7, smoke);
 
     // Shape the smoke
+    float inJar = 1.0 - smoothstep(-jarThickness, 0.0, jarDist);
+    float jarOpening = smoothstep(0.25, 0.3, uv.y);
+    float smokeMask = mix(inJar, 1.0, jarOpening);
     smoke *= (1.0 - smoothstep(0.0, 0.25, abs(uv.x))); // Confine horizontally
     smoke *= smoothstep(0.0, 0.4, uv.y + 0.2); // Make it rise
-    smoke *= inJar; // Smoke is inside the jar
+    smoke *= smokeMask;
 
     // Color the smoke
-    float distFromEmber = distance(uv, vec2(0.0, -0.2));
-    vec3 smokeColor = mix(vec3(1.0, 0.5, 0.2), vec3(0.8), smoothstep(0.1, 0.6, distFromEmber));
-    smokeColor *= smoke;
+    vec3 smokeColor = vec3(0.9) * smoke; // White smoke
 
     // --- Composition ---
-    finalColor += emberColor;
+    finalColor = emberColor;
     finalColor = mix(finalColor, jarColor, glassAlpha);
     finalColor += smokeColor;
 
-    fragColor = vec4(finalColor, 1.0);
+    float finalAlpha = max(glassAlpha, smoke) + emberGlow * 0.5;
+    fragColor = vec4(finalColor, finalAlpha);
 }
 """
 
