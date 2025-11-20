@@ -24,53 +24,100 @@ out vec4 fragColor;
 uniform float iTime;
 uniform vec2 iResolution;
 
-// Simple 2D noise function
-float hash(vec2 p) {
-    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
+// --- Noise Functions ---
+float random(vec2 p) {
+    return fract(sin(dot(p.xy, vec2(12.9898, 78.233))) * 43758.5453);
 }
 
 float noise(vec2 p) {
     vec2 i = floor(p);
     vec2 f = fract(p);
-    vec2 u = f * f * (3.0 - 2.0 * f);
-    return mix(mix(hash(i + vec2(0.0, 0.0)), hash(i + vec2(1.0, 0.0)), u.x),
-               mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), u.x), u.y);
+    f = f * f * (3.0 - 2.0 * f);
+    float a = random(i);
+    float b = random(i + vec2(1.0, 0.0));
+    float c = random(i + vec2(0.0, 1.0));
+    float d = random(i + vec2(1.0, 1.0));
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
 }
 
-
-// Smoke and ember color
-void main() {
-    vec2 uv = texCoords;
-    uv -= 0.5;
-    uv.x *= iResolution.x / iResolution.y;
-
-    float time = iTime * 0.15;
-
-    // Smoke movement using layered noise
-    float smoke = 0.0;
-    vec2 suv = uv * 2.0;
-    for (int i = 0; i < 5; i++) {
-        float f = float(i);
-        smoke += (0.5 / f) * noise(suv * f * 0.8 + vec2(0.0, -time * f));
+float fbm(vec2 p) {
+    float value = 0.0;
+    float amplitude = 0.5;
+    for (int i = 0; i < 6; i++) {
+        value += amplitude * noise(p);
+        p *= 2.0;
+        amplitude *= 0.5;
     }
-    smoke = smoothstep(0.35, 0.75, smoke);
+    return value;
+}
 
-    // Glowing embers at bottom
-    float emberMask = exp(-12.0 * length(uv - vec2(0.0, -0.3)));
-    float flicker = 0.5 + 0.5 * sin(iTime * 6.0 + sin(iTime * 2.0));
-    vec3 emberColor = vec3(1.0, 0.4, 0.05) * emberMask * (0.7 + 0.3 * flicker);
+// --- SDF Functions ---
+float sdRoundedBox(vec2 p, vec2 b, float r) {
+    vec2 q = abs(p) - b;
+    return length(max(q, 0.0)) - r;
+}
 
-    // Smoke coloring (soft white/gray)
-    vec3 smokeColor = mix(vec3(0.1, 0.1, 0.1), vec3(0.9), smoke * 0.9);
+float sdJar(vec2 p) {
+    float body = sdRoundedBox(p - vec2(0.0, -0.05), vec2(0.18, 0.22), 0.05);
+    float neck = sdRoundedBox(p - vec2(0.0, 0.22), vec2(0.1, 0.04), 0.02);
+    float rim = sdRoundedBox(p - vec2(0.0, 0.28), vec2(0.12, 0.02), 0.01);
+    return min(min(body, neck), rim);
+}
 
-    // Blend smoke and embers
-    vec3 color = mix(emberColor, smokeColor, smoke * 0.9);
+// --- Main Image ---
+void main() {
+    vec2 uv = (2.0 * texCoords - 1.0);
+    uv.x *= iResolution.x / iResolution.y;
+    vec2 original_uv = uv;
+    uv -= vec2(0.8, -0.5); // Position jar in bottom right
 
-    // Jar-like vignette
-    float vignette = smoothstep(1.0, 0.6, length(uv));
-    color *= vignette;
+    vec3 finalColor = vec3(0.0);
+    float time = iTime * 0.25;
 
-    fragColor = vec4(color, 1.0);
+    // --- Jar ---
+    float jarDist = sdJar(uv);
+    float jarThickness = 0.01;
+
+    // Glass appearance
+    float glassAlpha = (1.0 - smoothstep(0.0, jarThickness, jarDist)) * 0.2;
+    vec3 normal = normalize(vec3(dFdx(jarDist), dFdy(jarDist), -0.1));
+    float highlight = pow(max(0.0, dot(reflect(vec3(0.0, 0.0, 1.0), normal), vec3(0.5, 0.5, 1.0))), 32.0);
+    vec3 jarColor = vec3(0.7, 0.8, 1.0) * 0.5 + highlight * 0.5;
+
+    // --- Ember ---
+    vec2 emberPos = uv - vec2(0.0, -0.2);
+    float emberShape = smoothstep(0.15, 0.0, length(emberPos));
+    float emberGlow = smoothstep(0.4, 0.0, length(emberPos));
+    float flicker = noise(vec2(iTime * 2.5)) * 0.6 + 0.4;
+    float hotFlicker = pow(noise(vec2(iTime * 5.0, 10.0)), 15.0);
+    vec3 emberColor = (vec3(1.0, 0.4, 0.1) * flicker + vec3(1.0, 0.8, 0.2) * hotFlicker) * emberShape;
+    emberColor += vec3(0.8, 0.2, 0.0) * emberGlow * 0.4;
+
+    // --- Smoke ---
+    vec2 smoke_uv = uv;
+    vec2 warp = vec2(fbm(smoke_uv * 2.0 + time * 0.5), fbm(smoke_uv * 2.0 + time * 0.5 + 5.0)) * 0.3;
+    smoke_uv += warp;
+    float smoke = fbm(smoke_uv * 3.0 + vec2(0.0, time * 0.8));
+    smoke = smoothstep(0.4, 0.7, smoke);
+
+    // Shape the smoke
+    float inJar = 1.0 - smoothstep(-jarThickness, 0.0, jarDist);
+    float jarOpening = smoothstep(0.25, 0.3, uv.y);
+    float smokeMask = mix(inJar, 1.0, jarOpening);
+    smoke *= (1.0 - smoothstep(0.0, 0.25, abs(uv.x))); // Confine horizontally
+    smoke *= smoothstep(0.0, 0.4, uv.y + 0.2); // Make it rise
+    smoke *= smokeMask;
+
+    // Color the smoke
+    vec3 smokeColor = vec3(0.9) * smoke; // White smoke
+
+    // --- Composition ---
+    finalColor = emberColor;
+    finalColor = mix(finalColor, jarColor, glassAlpha);
+    finalColor += smokeColor;
+
+    float finalAlpha = max(glassAlpha, smoke) + emberGlow * 0.5;
+    fragColor = vec4(finalColor, finalAlpha);
 }
 """
 
@@ -88,6 +135,10 @@ def main():
 
     pygame.display.set_mode((width, height), DOUBLEBUF | OPENGL)
     pygame.display.set_caption("Glowing Embers and Smoke")
+
+    glEnable(GL_BLEND)
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+    glClearColor(0.0, 0.0, 0.0, 1.0)
 
     shader = create_shader()
     glUseProgram(shader)
